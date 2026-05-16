@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import admin
 from django.utils.html import format_html
 from unfold.admin import ModelAdmin, TabularInline
@@ -5,8 +6,25 @@ from unfold.admin import ModelAdmin, TabularInline
 from room_schedules.models import Venue, Room
 
 
+class RoomInlineForm(forms.ModelForm):
+    class Meta:
+        model = Room
+        fields = ('name', 'artifax_id', 'o365_calendar_email', 'allow_tablet_booking')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # A room without an O365 calendar is valid (Artifax-only rooms).
+        self.fields['o365_calendar_email'].required = False
+
+    def clean_o365_calendar_email(self):
+        # Treat a blank email as NULL so it doesn't collide with the
+        # unique constraint (empty strings would; NULLs don't).
+        return self.cleaned_data.get('o365_calendar_email') or None
+
+
 class RoomInline(TabularInline):
     model = Room
+    form = RoomInlineForm
     extra = 0
     fields = ('name', 'artifax_id', 'o365_calendar_email', 'allow_tablet_booking')
 

@@ -55,15 +55,17 @@ def room_led_status(request, venue_id, room_id):
 
 def show_venue(request, venue_id):
     venue = get_object_or_404(Venue, pk=venue_id)
-    events = Event.objects.filter(room__venue=venue, end_time__gte=datetime.datetime.now(), cancelled=False)
-    current_date = (datetime.datetime.now() - datetime.timedelta(hours=HOUR_BREAK_POINT)).date()
+    events = Event.objects.filter(room__venue=venue, end_time__gte=timezone.now(), cancelled=False)
+    current_date = (timezone.localtime(timezone.now()) - datetime.timedelta(hours=HOUR_BREAK_POINT)).date()
     return render(request, "room_schedules/dashboard.html", {'events': events, 'current_date': current_date})
 
 
 def _get_room_display_context(room):
     """Build the shared template context for room display views."""
     now = timezone.now()
-    current_date = (now - datetime.timedelta(hours=HOUR_BREAK_POINT)).date()
+    # localtime() so the Fringe-day .date() matches the Europe/London wall
+    # clock the 04:00 break point is defined against.
+    current_date = (timezone.localtime(now) - datetime.timedelta(hours=HOUR_BREAK_POINT)).date()
 
     # Get today's remaining events (not yet ended, not cancelled)
     events = list(
@@ -118,16 +120,17 @@ def _get_room_display_context(room):
             free_since = previous_event.end_time
         else:
             # No earlier event today — free since the start of the display day
-            free_since = datetime.datetime.combine(
+            free_since = timezone.make_aware(datetime.datetime.combine(
                 current_date,
                 datetime.time(HOUR_BREAK_POINT, 0),
-            )
+            ))
 
-    # Timestamps for JS countdowns (as ISO strings for easy parsing)
-    current_event_end_iso = current_event.end_time.isoformat() if current_event else None
-    current_event_start_iso = current_event.start_time.isoformat() if current_event else None
-    next_event_start_iso = next_event.start_time.isoformat() if next_event else None
-    free_since_iso = free_since.isoformat() if free_since else None
+    # Timestamps for JS countdowns. localtime() so the ISO carries an offset
+    # (e.g. +01:00) — browsers' new Date(iso) then parse the correct instant.
+    current_event_end_iso = timezone.localtime(current_event.end_time).isoformat() if current_event else None
+    current_event_start_iso = timezone.localtime(current_event.start_time).isoformat() if current_event else None
+    next_event_start_iso = timezone.localtime(next_event.start_time).isoformat() if next_event else None
+    free_since_iso = timezone.localtime(free_since).isoformat() if free_since else None
 
     return {
         'room': room,
@@ -137,7 +140,7 @@ def _get_room_display_context(room):
         'next_event': next_event,
         'is_available': is_available,
         'is_warning': is_warning,
-        'now_iso': now.isoformat(),
+        'now_iso': timezone.localtime(now).isoformat(),
         'current_event_end_iso': current_event_end_iso,
         'current_event_start_iso': current_event_start_iso,
         'next_event_start_iso': next_event_start_iso,
@@ -172,7 +175,7 @@ def book_adhoc(request, venue_id, room_id):
     if not room.allow_tablet_booking or not room.o365_calendar_email:
         return JsonResponse({'error': 'Room does not support adhoc booking.'}, status=400)
 
-    now = datetime.datetime.now()
+    now = timezone.now()
 
     current_event = Event.objects.filter(
         room=room, start_time__lte=now, end_time__gte=now, cancelled=False
@@ -229,7 +232,7 @@ def room_state_hash(request, venue_id, room_id):
     avoiding unnecessary full-page refreshes.
     """
     room = get_object_or_404(Room, pk=room_id)
-    now = datetime.datetime.now()
+    now = timezone.now()
 
     events = Event.objects.filter(
         room=room,
@@ -239,7 +242,7 @@ def room_state_hash(request, venue_id, room_id):
 
     # Build a deterministic fingerprint from the event data
     raw = '|'.join(
-        f'{pk},{name},{st.isoformat()},{et.isoformat()},{c}'
+        f'{pk},{name},{timezone.localtime(st).isoformat()},{timezone.localtime(et).isoformat()},{c}'
         for pk, name, st, et, c in events
     )
     digest = hashlib.md5(raw.encode()).hexdigest()[:12]
