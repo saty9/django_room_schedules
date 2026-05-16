@@ -3,6 +3,8 @@ import datetime
 import json
 import re
 
+from django.utils import timezone
+
 from room_schedules.data_chains import execute_chain, search_chains
 from room_schedules.settings import BASE_ADDRESS, HOUR_BREAK_POINT, API_KEY
 
@@ -47,9 +49,10 @@ def get_start_time(event: dict):
         result = execute_chain(search_chains["doors_time"], event['custom_forms'])
         if result is None:
             raise ValueError
-        out = datetime.datetime.strptime(result + ' ' + event['date'], "%H:%M:%S %Y-%m-%d")
+        # Artifax returns Europe/London local wall-clock time -> make aware in TIME_ZONE.
+        out = timezone.make_aware(datetime.datetime.strptime(result + ' ' + event['date'], "%H:%M:%S %Y-%m-%d"))
     except (KeyError, IndexError, StopIteration, ValueError):
-        out = datetime.datetime.strptime(event['start_time'][:-1] + ' ' + event['date'], "%H:%M:%S.%f %Y-%m-%d")
+        out = timezone.make_aware(datetime.datetime.strptime(event['start_time'][:-1] + ' ' + event['date'], "%H:%M:%S.%f %Y-%m-%d"))
     return out
 
 
@@ -63,9 +66,12 @@ def get_finish_time(event: dict):
         result = execute_chain(search_chains["end_time"], event['custom_forms'])
         if result is None:
             raise ValueError
-        out = datetime.datetime.strptime(result + ' ' + event['date'], "%H:%M:%S %Y-%m-%d")
+        # Artifax returns Europe/London local wall-clock time -> make aware in TIME_ZONE.
+        out = timezone.make_aware(datetime.datetime.strptime(result + ' ' + event['date'], "%H:%M:%S %Y-%m-%d"))
     except (KeyError, IndexError, StopIteration, ValueError):
-        out = datetime.datetime.strptime(event['end_time'][:-1] + ' ' + event['date'], "%H:%M:%S.%f %Y-%m-%d")
+        out = timezone.make_aware(datetime.datetime.strptime(event['end_time'][:-1] + ' ' + event['date'], "%H:%M:%S.%f %Y-%m-%d"))
+    # `out` stays London-aware here, so `out.time()` is still the London wall clock
+    # the Fringe-time 04:00 break point is defined against.
     if out.time() <= datetime.time(hour=HOUR_BREAK_POINT):
         out += datetime.timedelta(days=1)
     return out
@@ -91,7 +97,9 @@ def events_today(venue_id):
     :return: list of events
     :rtype: list of dict of (str, str)
     """
-    now = datetime.datetime.now()
+    # Use local (Europe/London) time so the Fringe-day .date()/.hour match the
+    # wall clock the 04:00 break point is defined against.
+    now = timezone.localtime(timezone.now())
     date = now.date()
     if now.hour <= HOUR_BREAK_POINT:
         date -= datetime.timedelta(days=1)
@@ -128,7 +136,10 @@ def events_happening_on_day(day: datetime.date, venue_id):
         new_events = []
     events.extend(new_events)
     list(map(lambda x: x.update({'time': get_start_time(x)}), events))  # add event time data
-    lower_bound = datetime.datetime(year=day.year, month=day.month, day=day.day, hour=HOUR_BREAK_POINT)
+    # Fringe-day bounds are London wall-clock; make aware to compare with the
+    # now-aware event times. (timedelta is absolute 24h: on the two annual DST
+    # transition nights the window is 23h/25h wide -- accepted, see plan Phase 5.)
+    lower_bound = timezone.make_aware(datetime.datetime(year=day.year, month=day.month, day=day.day, hour=HOUR_BREAK_POINT))
     upper_bound = lower_bound + datetime.timedelta(days=1)
 
     def time_filter(event):

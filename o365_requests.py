@@ -1,9 +1,10 @@
 import json
 import httplib2
 import msal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as stdlib_timezone
 
 from django.conf import settings
+from django.utils import timezone
 
 from room_schedules.settings import (
     HOUR_BREAK_POINT,
@@ -57,9 +58,13 @@ def get_todays_events(room_email):
 
     Returns a list of dicts:
         {id, name, organiser, start_time, end_time, cancelled}
-    where start_time and end_time are naive datetime objects in local time.
+    where start_time and end_time are timezone-aware UTC datetimes (Graph's
+    default), suitable for storing with USE_TZ=True.
     """
-    now = datetime.now()
+    # Aware Europe/London now: .hour is the local wall clock the Fringe-day
+    # 04:00 break is defined against; the window bounds carry an offset so
+    # Graph interprets startDateTime/endDateTime correctly.
+    now = timezone.localtime(timezone.now())
     if now.hour < HOUR_BREAK_POINT:
         start = (now - timedelta(days=1)).replace(
             hour=HOUR_BREAK_POINT, minute=0, second=0, microsecond=0
@@ -95,8 +100,9 @@ def get_todays_events(room_email):
             "id": item["id"],
             "name": item.get("subject", ""),
             "organiser": item.get("organizer", {}).get("emailAddress", {}).get("name", ""),
-            "start_time": datetime.fromisoformat(item["start"]["dateTime"].rstrip("Z")),
-            "end_time": datetime.fromisoformat(item["end"]["dateTime"].rstrip("Z")),
+            # Graph returns these in UTC; tag them aware-UTC for USE_TZ=True.
+            "start_time": datetime.fromisoformat(item["start"]["dateTime"].rstrip("Z")).replace(tzinfo=stdlib_timezone.utc),
+            "end_time": datetime.fromisoformat(item["end"]["dateTime"].rstrip("Z")).replace(tzinfo=stdlib_timezone.utc),
             "cancelled": item.get("isCancelled", False),
         })
     return results
@@ -105,16 +111,20 @@ def get_todays_events(room_email):
 def create_adhoc_booking(room_email, start_dt, end_dt):
     """Create an 'Adhoc Booking' event on the room's O365 calendar.
 
-    start_dt and end_dt are naive local datetimes (Europe/London).
+    start_dt and end_dt are timezone-aware datetimes; they are sent as
+    Europe/London wall-clock paired with the timeZone field.
     Returns the new event's O365 id string.
     """
     token = _get_access_token()
     h = httplib2.Http()
     url = f"{GRAPH_API}/users/{room_email}/calendar/events"
+    # Naive local (Europe/London) wall clock to match the timeZone field.
+    local_start = timezone.localtime(start_dt).replace(tzinfo=None)
+    local_end = timezone.localtime(end_dt).replace(tzinfo=None)
     body = json.dumps({
         "subject": "Adhoc Booking",
-        "start": {"dateTime": start_dt.isoformat(), "timeZone": settings.TIME_ZONE},
-        "end":   {"dateTime": end_dt.isoformat(),   "timeZone": settings.TIME_ZONE},
+        "start": {"dateTime": local_start.isoformat(), "timeZone": settings.TIME_ZONE},
+        "end":   {"dateTime": local_end.isoformat(),   "timeZone": settings.TIME_ZONE},
     })
     response, content = h.request(
         url,
